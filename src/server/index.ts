@@ -8,6 +8,7 @@ import { Market, today } from '../core/market.js';
 import { valuate } from '../core/portfolio.js';
 import { rebalance, type RebalanceOptions } from '../core/rebalance.js';
 import { buildReport } from '../core/report.js';
+import { parseSymbols } from '../core/symbols.js';
 import type { Instrument, Tx } from '../core/types.js';
 import { parsePriceCsv } from '../providers/others.js';
 import { defaultRegistry } from '../providers/registry.js';
@@ -18,6 +19,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const store = new Store(process.env.PETF_DATA ?? path.join(root, 'data'));
 const reg = defaultRegistry();
 const TOKEN = process.env.PETF_TOKEN;
+const BULK_LIMIT = 100;
+type BulkResult = { symbol: string; status: 'added' | 'exists' | 'invalid' | 'failed'; name?: string };
 
 const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' }, bodyLimit: 10 * 1024 * 1024 });
 
@@ -107,6 +110,8 @@ app.get<{ Querystring: { q: string; provider?: string } }>('/api/search', async 
 app.post<{ Body: Partial<Instrument> & { provider?: string; symbol?: string } }>('/api/instruments', async (req) => {
   const d = await store.data();
   const b = req.body;
+  const same = d.instruments.find(i => b.provider && i.source?.provider === b.provider && i.source.symbol === b.symbol);
+  if (same && b.provider !== 'manual') return same;   // adding twice is a no-op, not an error
   let inst: Instrument;
   if (b.provider && b.provider !== 'manual' && b.symbol) {
     const meta = (await reg.get(b.provider).describe?.(b.symbol)) ?? {};
@@ -120,6 +125,60 @@ app.post<{ Body: Partial<Instrument> & { provider?: string; symbol?: string } }>
   await store.put('instruments', [...d.instruments, inst]);
   await refresh(store, reg, { ...d, instruments: [inst] }).catch(() => []);
   return inst;
+});
+
+/** Add many tickers at once. Each symbol reports its own outcome, so one bad ticker never blocks the rest. */
+app.post<{ Body: { symbols: string } }>('/api/instruments/bulk', async (req) => {
+  const { valid, invalid } = parseSymbols(String(req.body?.symbols ?? ''));
+  if (valid.length + invalid.length > BULK_LIMIT) throw new Error(`Add up to ${BULK_LIMIT} tickers at a time.`);
+  const known = await store.data();
+  const results: BulkResult[] = invalid.map(symbol => ({ symbol, status: 'invalid' }));
+  const todo: string[] = [];
+  for (const symbol of valid) {
+    const hit = known.instruments.find(i => i.source?.provider === 'yahoo' && i.source.symbol === symbol);
+    if (hit) results.push({ symbol, status: 'exists', name: hit.name }); else todo.push(symbol);
+  }
+  const yahoo = reg.get('yahoo');
+  const found: { symbol: string; meta: Partial<Instrument> }[] = [];
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(4, todo.length) }, async () => {
+    while (next < todo.length) {
+      const symbol = todo[next++];
+      try { found.push({ symbol, meta: (await yahoo.describe?.(symbol)) ?? {} }); }
+      catch { results.push({ symbol, status: 'failed' }); }
+    }
+  }));
+  // Re-read after the network calls so an edit made meanwhile isn't overwritten.
+  const d = await store.data();
+  const added: Instrument[] = [];
+  for (const symbol of todo) {
+    const f = found.find(x => x.symbol === symbol);
+    if (!f) continue;
+    const taken = [...d.instruments, ...added].some(i => i.id === symbol);
+    const inst = { kind: 'security', currency: 'USD', ...f.meta, id: taken ? `${symbol}.yahoo` : symbol, source: { provider: 'yahoo', symbol } } as Instrument;
+    added.push(inst);
+    results.push({ symbol, status: 'added', name: inst.name });
+  }
+  if (added.length) {
+    await store.put('instruments', [...d.instruments, ...added]);
+    await refresh(store, reg, { ...d, instruments: added }).catch(() => []);
+  }
+  const order = [...valid, ...invalid];
+  return results.sort((a, b) => order.indexOf(a.symbol) - order.indexOf(b.symbol));
+});
+
+/** Delete an instrument and everything recorded against it. The ledger can't reference a missing instrument. */
+app.delete<{ Params: { id: string } }>('/api/instruments/:id', async (req) => {
+  const d = await store.data();
+  const id = req.params.id;
+  if (!d.instruments.some(i => i.id === id)) throw new Error(`unknown instrument ${id}`);
+  const transactions = d.transactions.filter(t => t.instrument !== id);
+  const instruments = d.instruments.filter(i => i.id !== id);
+  replay({ ...d, instruments, transactions });
+  await store.put('transactions', transactions);
+  await store.put('instruments', instruments);
+  await store.removeInstrumentFiles(id);
+  return { removedTransactions: d.transactions.length - transactions.length };
 });
 
 app.post<{ Params: { id: string }; Body: { csv: string; currency?: string } }>('/api/instruments/:id/prices', async (req) => {

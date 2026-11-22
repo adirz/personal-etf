@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { api, fmtMoney, label, num, pct, type Data, type RebalanceResult, type Report, type Tx, type Instrument, type ExposureSpec } from './api';
+import { parseSymbols } from '../../src/core/symbols';
+import { api, fmtMoney, label, num, pct, type BulkResult, type Data, type RebalanceResult, type Report, type Tx, type Instrument, type ExposureSpec } from './api';
 import { Bullet, HBars, Heatmap, LineChart, RiskBars } from './charts';
 import { bandPP, setWeight } from '../../src/core/targets';
 import type { TargetRule, Targets as TargetsData } from '../../src/core/types';
@@ -394,7 +395,7 @@ function AddHolding({ data, report, reload, close }: { data: Data; report: Repor
   const [what, setWhat] = useState('');
   const [ccy, setCcy] = useState(data.accounts[0]?.currency ?? report.base);
   const [creating, setCreating] = useState(false);
-  if (creating) return <Sheet title="Add instrument" close={() => setCreating(false)}><InstrumentForm done={async i => { await reload(); if (i) setWhat(i.id); setCreating(false); }} /></Sheet>;
+  if (creating) return <Sheet title="Add instrument" close={() => setCreating(false)}><InstrumentForm data={data} reload={reload} onUse={i => { setWhat(i.id); setCreating(false); }} done={async i => { await reload(); if (i) setWhat(i.id); setCreating(false); }} /></Sheet>;
   const instrument = what === 'cash' ? `CASH:${ccy}` : what;
   const existing = report.holdings.find(h => h.account === account && h.instrument === instrument);
   return (
@@ -445,6 +446,7 @@ function HoldingDetail({ h, data, reload, m }: { h: Report['holdings'][number]; 
         <label className="row small"><input type="checkbox" style={{ width: 'auto' }} checked={!!inst.excluded} onChange={e => saveInst({ excluded: e.target.checked })} /> In exception sleeve (excluded from targets)</label>
         {(inst.kind === 'manual' || inst.source?.provider === 'manual') && <label className="f">Upload price CSV (date,price)
           <input type="file" accept=".csv,.txt" onChange={async e => { const f = e.target.files?.[0]; if (!f) return; try { const r = await api.uploadPrices(inst.id, await f.text()); setMsg(`${r.points} prices loaded`); await reload(); } catch (x) { setMsg(String(x)); } }} /></label>}
+        <button className="btn danger block" onClick={async () => { try { if (await confirmDeleteInstrument(data, inst)) await reload(); } catch (e) { setMsg((e as Error).message); } }}>Delete instrument</button>
         {msg && <div className="small muted">{msg}</div>}
       </>}
     </div>
@@ -461,6 +463,7 @@ const TX_FIELDS: Record<string, (keyof Tx)[]> = {
 
 export function Activity({ data, report: r, reload }: Ctx) {
   const [adding, setAdding] = useState<'tx' | 'inst' | null>(null);
+  const [instErr, setInstErr] = useState('');
   const txs = [...data.transactions].sort((a, b) => b.date.localeCompare(a.date));
   return (
     <>
@@ -468,6 +471,19 @@ export function Activity({ data, report: r, reload }: Ctx) {
         <button className="btn" style={{ flex: 1 }} onClick={() => setAdding('tx')}>+ Transaction</button>
         <button className="btn ghost" style={{ flex: 1 }} onClick={() => setAdding('inst')}>+ Instrument</button>
       </div>
+      <details className="card">
+        <summary><b>Instruments ({data.instruments.length})</b> <span className="small muted">tap to view or delete</span></summary>
+        {instErr && <div className="err" style={{ marginTop: 8 }}>{instErr}</div>}
+        <div className="list" style={{ marginTop: 8 }}>
+          {data.instruments.map(i => (
+            <div className="item row between" key={i.id}>
+              <div><b>{i.id}</b> <span className="tag">{i.kind}</span>{i.name && i.name !== i.id && <div className="small muted">{i.name}</div>}</div>
+              <button className="icon-btn" aria-label={`Delete ${i.id}`} onClick={async () => { setInstErr(''); try { if (await confirmDeleteInstrument(data, i)) await reload(); } catch (e) { setInstErr((e as Error).message); } }}>✕</button>
+            </div>
+          ))}
+          {data.instruments.length === 0 && <div className="muted small">No instruments yet.</div>}
+        </div>
+      </details>
       <div className="card"><div className="list">
         {txs.map(t => (
           <div className="item row between" key={t.id}>
@@ -479,7 +495,7 @@ export function Activity({ data, report: r, reload }: Ctx) {
         {txs.length === 0 && <div className="muted">No transactions yet.</div>}
       </div></div>
       {adding && <Sheet title={adding === 'tx' ? 'New transaction' : 'Add instrument'} close={() => setAdding(null)}>
-        {adding === 'tx' ? <TxForm data={data} base={r.base} done={async () => { setAdding(null); await reload(); }} /> : <InstrumentForm done={async () => { setAdding(null); await reload(); }} />}
+        {adding === 'tx' ? <TxForm data={data} base={r.base} done={async () => { setAdding(null); await reload(); }} /> : <InstrumentForm data={data} reload={reload} done={async () => { setAdding(null); await reload(); }} />}
       </Sheet>}
     </>
   );
@@ -511,23 +527,94 @@ function TxForm({ data, base, done }: { data: Data; base: string; done: () => vo
   );
 }
 
-function InstrumentForm({ done }: { done: (added?: Instrument) => void }) {
+/** Confirms, then deletes an instrument and its transactions. Returns false if the user cancelled. */
+async function confirmDeleteInstrument(data: Data, inst: Instrument) {
+  const n = data.transactions.filter(t => t.instrument === inst.id).length;
+  const detail = n ? `\n\nThis also deletes its ${n} transaction${n === 1 ? '' : 's'}, and account cash is recalculated without them.` : '';
+  if (!confirm(`Delete ${inst.name ?? inst.id}?${detail}`)) return false;
+  await api.delInstrument(inst.id);
+  return true;
+}
+
+const BULK_LABEL: Record<BulkResult['status'], string> = { added: '✓ Added', exists: '✓ Already added', invalid: 'Not a valid ticker', failed: 'Not found' };
+
+function BulkAdd({ reload }: { reload?: () => Promise<void> }) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [results, setResults] = useState<BulkResult[] | null>(null);
+  const count = parseSymbols(text).valid.length;
+  const run = async () => {
+    setBusy(true); setErr(''); setResults(null);
+    try {
+      const r = await api.addInstruments(text);
+      setResults(r);
+      setText(r.filter(x => x.status === 'failed' || x.status === 'invalid').map(x => x.symbol).join(', '));
+      await reload?.();
+    } catch (e) { setErr((e as Error).message); }
+    setBusy(false);
+  };
+  return (
+    <>
+      <label className="f">Tickers, separated by commas, spaces, or new lines
+        <textarea aria-label="Tickers" style={{ minHeight: 90 }} value={text} placeholder="SPY, VT, META, TEVA.TA" autoCapitalize="characters" spellCheck={false} onChange={e => setText(e.target.value)} />
+      </label>
+      <button className="btn block" disabled={busy || !count} onClick={run}>{busy ? 'Adding…' : count ? `Add ${count} instrument${count === 1 ? '' : 's'}` : 'Add instruments'}</button>
+      <div className="small muted">Israeli securities need the .TA ending, for example TEVA.TA.</div>
+      {err && <div className="err">{err}</div>}
+      {results && <div className="list" role="status">{results.map(x => (
+        <div className="item row between small" key={x.symbol}>
+          <span><b>{x.symbol}</b>{x.name ? ` · ${x.name}` : ''}</span>
+          <span className={x.status === 'added' || x.status === 'exists' ? 'up' : 'down'} style={{ whiteSpace: 'nowrap' }}>{BULK_LABEL[x.status]}</span>
+        </div>
+      ))}</div>}
+    </>
+  );
+}
+
+function InstrumentForm({ data, done, onUse, reload }: { data: Data; done: (added?: Instrument) => void; onUse?: (existing: Instrument) => void; reload?: () => Promise<void> }) {
+  const [mode, setMode] = useState<'search' | 'bulk'>('search');
+  const [addingHit, setAddingHit] = useState('');
   const [q, setQ] = useState('');
   const [hits, setHits] = useState<Awaited<ReturnType<typeof api.search>>>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [man, setMan] = useState<Partial<Instrument>>({ kind: 'manual', currency: 'ILS' });
+  const modes = (
+    <div className="seg">
+      <button className={mode === 'search' ? 'on' : ''} onClick={() => setMode('search')}>Search</button>
+      <button className={mode === 'bulk' ? 'on' : ''} onClick={() => setMode('bulk')}>Add several</button>
+    </div>
+  );
+  if (mode === 'bulk') return <div className="stack">{modes}<BulkAdd reload={reload} /></div>;
   return (
     <div className="stack">
+      {modes}
       <div className="row">
         <input placeholder="Search: SPY, VT, TEVA.TA, bitcoin…" value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && (e.currentTarget.nextElementSibling as HTMLButtonElement)?.click()} />
         <button className="btn" disabled={busy || !q} onClick={async () => { setBusy(true); setErr(''); try { setHits(await api.search(q)); } catch (e) { setErr(String(e)); } setBusy(false); }}>Search</button>
       </div>
-      <div className="list">{hits.map(h => (
-        <div className="item row between" key={h.provider + h.symbol}>
-          <div><b>{h.symbol}</b> <span className="small muted">{h.exchange} · {h.type} · {h.provider}</span><div className="small">{h.name}</div></div>
-          <button className="btn ghost" onClick={async () => { try { done(await api.addInstrument({ provider: h.provider, symbol: h.symbol, id: h.provider === 'coingecko' ? h.name.match(/\((\w+)\)$/)?.[1] ?? h.symbol : h.symbol })); } catch (e) { setErr(String(e)); } }}>Add</button>
-        </div>))}</div>
+      <div className="list">{hits.map(h => {
+        const key = `${h.provider}|${h.symbol}`;
+        const existing = data.instruments.find(i => i.source?.provider === h.provider && i.source.symbol === h.symbol);
+        const add = async () => {
+          const wanted = h.provider === 'coingecko' ? h.name.match(/\((\w+)\)$/)?.[1] ?? h.symbol : h.symbol;
+          // A different asset can share a ticker across providers, so keep its id unique.
+          const id = data.instruments.some(i => i.id === wanted) ? `${wanted}.${h.provider}` : wanted;
+          setAddingHit(key); setErr('');
+          try { done(await api.addInstrument({ provider: h.provider, symbol: h.symbol, id })); }
+          catch (e) { setErr((e as Error).message); setAddingHit(''); }
+        };
+        return (
+          <div className="item row between" key={key}>
+            <div><b>{h.symbol}</b> <span className="small muted">{h.exchange} · {h.type} · {h.provider}</span><div className="small">{h.name}</div></div>
+            {existing
+              ? (onUse ? <button className="btn ghost" style={{ whiteSpace: 'nowrap' }} onClick={() => onUse(existing)}>✓ Added · Use</button>
+                : <button className="btn ghost" style={{ whiteSpace: 'nowrap' }} disabled>✓ Added</button>)
+              : <button className="btn ghost" disabled={!!addingHit} onClick={add}>{addingHit === key ? 'Adding…' : 'Add'}</button>}
+          </div>
+        );
+      })}</div>
       <details><summary className="small" style={{ color: 'var(--s1-ink)' }}>Manual instrument (Israeli fund, cash account, loan, property…)</summary>
         <div className="grid2" style={{ marginTop: 8 }}>
           <label className="f">ID<input value={man.id ?? ''} onChange={e => setMan({ ...man, id: e.target.value })} /></label>
@@ -536,7 +623,9 @@ function InstrumentForm({ done }: { done: (added?: Instrument) => void }) {
           <label className="f">Currency<input value={man.currency ?? ''} onChange={e => setMan({ ...man, currency: e.target.value.toUpperCase() })} /></label>
         </div>
         <label className="row small" style={{ marginTop: 8 }}><input type="checkbox" style={{ width: 'auto' }} checked={!!man.tradable} onChange={e => setMan({ ...man, tradable: e.target.checked })} /> Can be bought/sold by the rebalancer (e.g. a fund, not a property)</label>
-        <button className="btn block" style={{ marginTop: 8 }} onClick={async () => { try { done(await api.addInstrument(man)); } catch (e) { setErr(String(e)); } }}>Add manual instrument</button>
+        {data.instruments.some(i => i.id === man.id)
+          ? <button className="btn block" style={{ marginTop: 8 }} disabled>✓ Already added</button>
+          : <button className="btn block" style={{ marginTop: 8 }} onClick={async () => { try { done(await api.addInstrument(man)); } catch (e) { setErr((e as Error).message); } }}>Add manual instrument</button>}
       </details>
       {err && <div className="err">{err}</div>}
     </div>

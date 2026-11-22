@@ -11,6 +11,7 @@ export function replay(data: Pick<Data, 'transactions' | 'instruments' | 'settin
     .sort((a, b) => a.date.localeCompare(b.date) || order(a) - order(b));
 
   const pos = new Map<string, Position>();
+  const sameDayEdits = new Map<string, { before: number; flow?: PortfolioState['flows'][number] }>();
   const st: PortfolioState = { positions: [], cash: {}, flows: [], realized: [], warnings: [] };
   const cash = (acct: string, ccy: Ccy, d: number) => {
     (st.cash[acct] ??= {});
@@ -116,7 +117,15 @@ export function replay(data: Pick<Data, 'transactions' | 'instruments' | 'settin
         else if (delta > 0) p.lots.push({ id: t.id, date: t.acquired ?? t.date, qty: delta, cost: avg ?? t.flowPrice ?? 0 });
         p.qty = t.qty!;
         if (method === 'average') averageLots(p);
-        if (i.kind !== 'debt' && delta) st.flows.push({ date: t.date, amount: delta * (t.flowPrice ?? t.price ?? avg ?? 0), currency: i.currency });
+        // Several edits on one day are one correction: the latest replaces the earlier flow.
+        const editKey = `${t.date}|${t.account}|${i.id}`;
+        const earlier = sameDayEdits.get(editKey);
+        if (earlier?.flow) st.flows.splice(st.flows.indexOf(earlier.flow), 1);
+        const before = earlier?.before ?? t.qty! - delta;
+        const change = t.qty! - before;
+        const flow = i.kind !== 'debt' && change ? { date: t.date, amount: change * (t.flowPrice ?? t.price ?? avg ?? 0), currency: i.currency } : undefined;
+        if (flow) st.flows.push(flow);
+        sameDayEdits.set(editKey, { before, flow });
         break;
       }
       default: st.warnings.push(`tx ${t.id}: unknown type ${(t as Tx).type}`);

@@ -69,6 +69,11 @@ export class Store {
   }
   async put(c: Collection, v: unknown) { await this.write(this.f(`${c}.json`), v); }
 
+  async removeInstrumentFiles(id: string) {
+    const name = `${enc(id)}.json`;
+    await Promise.all([this.f('manual-prices', name), this.f('cache', 'prices', name), this.f('cache', 'exposure', name)].map(f => fs.rm(f, { force: true })));
+  }
+
   // ── save / load ──
   private async readAll<T>(...sub: string[]): Promise<Record<string, T>> {
     const out: Record<string, T> = {};

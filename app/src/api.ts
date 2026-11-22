@@ -4,6 +4,8 @@ import type { RebalanceOptions, RebalanceResult } from '../../src/core/rebalance
 
 export type { Data, Tx, Instrument, ExposureSpec, Report, RebalanceOptions, RebalanceResult };
 
+export type BulkResult = { symbol: string; status: 'added' | 'exists' | 'invalid' | 'failed'; name?: string };
+
 const cfg = () => ({ base: localStorage.getItem('petf.server') ?? '', token: localStorage.getItem('petf.token') ?? '' });
 export const setServer = (base: string, token: string) => { localStorage.setItem('petf.server', base.replace(/\/$/, '')); localStorage.setItem('petf.token', token); };
 export const getServer = cfg;
@@ -30,6 +32,8 @@ export const api = {
   loadFile: (backup: unknown) => req<{ autoBackup: string }>('POST', '/backup', backup),
   search: (q: string) => req<{ provider: string; symbol: string; name: string; exchange?: string; type?: string }[]>('GET', `/search?q=${encodeURIComponent(q)}`),
   addInstrument: (b: Partial<Instrument> & { provider?: string; symbol?: string }) => req<Instrument>('POST', '/instruments', b),
+  addInstruments: (symbols: string) => req<BulkResult[]>('POST', '/instruments/bulk', { symbols }),
+  delInstrument: (id: string) => req<{ removedTransactions: number }>('DELETE', `/instruments/${encodeURIComponent(id)}`),
   uploadPrices: (id: string, csv: string) => req<{ points: number }>('POST', `/instruments/${encodeURIComponent(id)}/prices`, { csv }),
   exposure: (id: string) => req<ExposureSpec | null>('GET', `/exposure/${encodeURIComponent(id)}`),
   refresh: (force = false) => req<{ item: string; ok: boolean; msg: string }[]>('POST', '/refresh', { force }),

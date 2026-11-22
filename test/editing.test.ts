@@ -77,6 +77,27 @@ describe('adjust transactions', () => {
     expect(s.cash).toEqual({});
     expect(s.flows).toEqual([]);
   });
+  it('a same-day price correction replaces the earlier flow', () => {
+    const s = state([
+      { id: 'c1', date: '2026-01-01', type: 'adjust', account: 'x', instrument: 'SPY', qty: 200, price: 3.75, flowPrice: 2.775 },
+      { id: 'c2', date: '2026-01-01', type: 'adjust', account: 'x', instrument: 'SPY', qty: 200, price: 37.55, flowPrice: 27.75 },
+    ]);
+    expect(s.flows).toEqual([{ date: '2026-01-01', amount: 5550, currency: 'USD' }]);
+  });
+  it('same-day edits net against the opening quantity', () => {
+    const s = state([...lots,
+      { id: 'c1', date: '2026-01-01', type: 'adjust', account: 'x', instrument: 'SPY', qty: 30, flowPrice: 300 },
+      { id: 'c2', date: '2026-01-01', type: 'adjust', account: 'x', instrument: 'SPY', qty: 25, flowPrice: 300 },
+    ]);
+    expect(s.flows.slice(2)).toEqual([{ date: '2026-01-01', amount: 1500, currency: 'USD' }]);
+  });
+  it('edits on different days stay separate', () => {
+    const s = state([
+      { id: 'c1', date: '2026-01-01', type: 'adjust', account: 'x', instrument: 'SPY', qty: 10, price: 100, flowPrice: 100 },
+      { id: 'c2', date: '2026-01-02', type: 'adjust', account: 'x', instrument: 'SPY', qty: 15, flowPrice: 120 },
+    ]);
+    expect(s.flows.map(f => f.amount)).toEqual([1000, 600]);
+  });
   it('a correction at market value does not create a return', () => {
     // 10 units at 100, corrected to 15 at the same market price.
     expect(twr([{ value: 1000, flow: 0 }, { value: 1500, flow: 500 }]).total).toBeCloseTo(0, 10);
