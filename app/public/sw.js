@@ -8,6 +8,7 @@ self.addEventListener('activate', e => e.waitUntil(
 self.addEventListener('fetch', e => {
   const u = new URL(e.request.url);
   if (e.request.method !== 'GET' || u.origin !== location.origin) return;
+  if (u.pathname === '/api/backup') return;   // always live, and never keep a full copy in the browser cache
   if (u.pathname.startsWith('/api')) {
     e.respondWith(fetch(e.request).then(r => { const c = r.clone(); caches.open('petf-api').then(x => x.put(e.request, c)); return r; }).catch(() => caches.match(e.request)));
     return;

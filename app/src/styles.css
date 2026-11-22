@@ -1,16 +1,17 @@
-/* Palette: dataviz reference instance (validated light & dark steps). */
+/* Palette: soft green, blue and white (light) / strong green, blue and navy (dark).
+   Amber and red are kept only for warnings and losses. --s1 is a fill behind white text; --s1-ink is blue used as text. */
 :root {
-  --page: #f9f9f7; --surface: #fcfcfb; --card: #ffffff; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
-  --grid: #e1e0d9; --axis: #c3c2b7; --s1: #2a78d6; --s2: #eb6834; --s1-soft: #cde2fb; --neutral: #f0efec;
-  --good: #006300; --warn: #fab219; --serious: #ec835a; --critical: #d03b3b; --band: rgba(42,120,214,.12);
+  --page: #f1f8f5; --surface: #f8fcfa; --card: #ffffff; --ink: #10294a; --ink-2: #3f5a70; --muted: #5f7485;
+  --grid: #d6e8e1; --axis: #b4d0c8; --s1: #2f76b8; --s1-ink: #2a6dab; --s2: #4fae88; --s1-soft: #d5e8f7; --neutral: #e6f1ed;
+  --good: #1c7a54; --warn: #eeae32; --serious: #e08a55; --critical: #c24545; --band: rgba(79,174,136,.24);
   --radius: 14px; --pad: 14px;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --page: #0d0d0d; --surface: #1a1a19; --card: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
-    --grid: #2c2c2a; --axis: #383835; --s1: #3987e5; --s2: #d95926; --s1-soft: #184f95; --neutral: #383835;
-    --good: #0ca30c; --band: rgba(57,135,229,.18);
+    --page: #07142b; --surface: #0e2140; --card: #102545; --ink: #eaf4ff; --ink-2: #b6cbe2; --muted: #8fa7c2;
+    --grid: #1f3a5f; --axis: #2e4f7a; --s1: #1a6fe0; --s1-ink: #6cb2ff; --s2: #12c46b; --s1-soft: #164a8f; --neutral: #1a3254;
+    --good: #2ee08a; --warn: #fab219; --serious: #f0905f; --critical: #ff6b6b; --band: rgba(18,196,107,.22);
   }
 }
 * { box-sizing: border-box; }
@@ -25,7 +26,7 @@ header.top h1 { font-size: 18px; margin: 0; letter-spacing: -.01em; }
 nav.tabs { position: fixed; bottom: 0; left: 0; right: 0; display: flex; justify-content: center; background: color-mix(in srgb, var(--page) 88%, transparent); backdrop-filter: blur(12px); border-top: 1px solid var(--grid); padding-bottom: env(safe-area-inset-bottom); z-index: 10; }
 nav.tabs > div { display: flex; max-width: 720px; width: 100%; }
 nav.tabs button { flex: 1; background: none; border: 0; padding: 9px 0 8px; display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 11px; color: var(--muted); cursor: pointer; }
-nav.tabs button.on { color: var(--s1); font-weight: 600; }
+nav.tabs button.on { color: var(--s1-ink); font-weight: 600; }
 nav.tabs svg { width: 22px; height: 22px; }
 
 .card { background: var(--card); border: 1px solid var(--grid); border-radius: var(--radius); padding: var(--pad); margin-bottom: 12px; }
@@ -61,8 +62,8 @@ textarea { font-family: ui-monospace, Menlo, monospace; font-size: 13px; min-hei
 .list > .item { padding: 11px 0; border-top: 1px solid var(--grid); } .list > .item:first-child { border-top: 0; }
 .tag { font-size: 11px; padding: 1px 7px; border-radius: 6px; background: var(--neutral); color: var(--ink-2); }
 .side { font-weight: 700; font-size: 12px; padding: 2px 8px; border-radius: 6px; }
-.side.buy { background: color-mix(in srgb, var(--s1) 15%, transparent); color: var(--s1); }
-.side.sell { background: color-mix(in srgb, var(--s2) 15%, transparent); color: var(--s2); }
+.side.buy { background: color-mix(in srgb, var(--s2) 18%, transparent); color: var(--good); }
+.side.sell { background: color-mix(in srgb, var(--s1) 18%, transparent); color: var(--s1-ink); }
 .warnbox { border-left: 3px solid var(--warn); padding: 8px 10px; background: color-mix(in srgb, var(--warn) 10%, transparent); border-radius: 8px; font-size: 13px; }
 .err { color: var(--critical); font-size: 13px; }
 .seg { display: flex; background: var(--surface); border: 1px solid var(--grid); border-radius: 11px; padding: 3px; }
@@ -78,7 +79,7 @@ details > summary { cursor: pointer; list-style: none; } details > summary::-web
 .sheet-bg { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 20; display: flex; align-items: flex-end; justify-content: center; }
 .handle { position: absolute; top: 50%; width: 36px; height: 36px; transform: translate(-50%, -50%); display: grid; place-items: center; cursor: ew-resize; touch-action: none; z-index: 1; border-radius: 50%; }
 .handle span { width: 18px; height: 18px; border-radius: 50%; background: var(--card); border: 3px solid var(--s1); box-shadow: 0 1px 4px rgba(0,0,0,.3); }
-.handle:focus-visible { outline: 2px solid var(--s1); }
+.handle:focus-visible { outline: 2px solid var(--s1-ink); }
 .handle.off { cursor: not-allowed; } .handle.off span { border-color: var(--muted); }
 .chip.hold { padding: 1px 8px; font-size: 11px; margin-left: 4px; }
 .sheet { background: var(--page); width: 100%; max-width: 720px; max-height: 92vh; overflow: auto; border-radius: 18px 18px 0 0; padding: 16px 14px calc(env(safe-area-inset-bottom) + 18px); }

@@ -48,7 +48,7 @@ export function HBars({ data, total, fmt }: { data: [string, number][]; total: n
         <div key={k} title={`${label(k)}: ${fmt(v)} (${pct(v / total)})`}>
           <div className="row between small"><span>{label(k)}</span><span className="num ink2">{pct(v / total)} · {fmt(v)}</span></div>
           <div style={{ height: 8, background: 'var(--neutral)', borderRadius: 4, marginTop: 3 }}>
-            <div style={{ width: `${(Math.abs(v) / max) * 100}%`, height: '100%', borderRadius: 4, background: v < 0 ? 'var(--s2)' : 'var(--s1)' }} />
+            <div style={{ width: `${(Math.abs(v) / max) * 100}%`, height: '100%', borderRadius: 4, background: v < 0 ? 'var(--critical)' : 'var(--s1)' }} />
           </div>
         </div>
       ))}
@@ -76,7 +76,7 @@ export function Bullet({ actual, target, band, out, max, drag }: {
   return (
     <div ref={bar} style={{ position: 'relative', height: 14, background: 'var(--neutral)', borderRadius: 4, margin: drag ? '8px 0' : undefined }} aria-label={`actual ${actual.toFixed(1)}%, target ${target}%`}>
       <div style={{ position: 'absolute', left: p(Math.max(0, target - band)), width: `calc(${p(target + band)} - ${p(Math.max(0, target - band))})`, top: 0, bottom: 0, background: 'var(--band)' }} />
-      <div style={{ position: 'absolute', left: 0, width: p(actual), top: 3, bottom: 3, borderRadius: 3, background: out ? 'var(--s2)' : 'var(--s1)' }} />
+      <div style={{ position: 'absolute', left: 0, width: p(actual), top: 3, bottom: 3, borderRadius: 3, background: out ? 'var(--warn)' : 'var(--s1)' }} />
       <div style={{ position: 'absolute', left: p(target), top: -2, bottom: -2, width: 2, marginLeft: -1, background: 'var(--ink)' }} />
       {drag && <div className={`handle ${drag.disabled ? 'off' : ''}`} style={{ left: p(target) }} role="slider" tabIndex={drag.disabled ? -1 : 0}
         aria-label={`${drag.name} target`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={target} aria-disabled={drag.disabled}
@@ -109,7 +109,7 @@ export function Heatmap({ ids, m }: { ids: string[]; m: number[][] }) {
                 <td className="muted" style={{ paddingRight: 6, whiteSpace: 'nowrap' }}>{a}</td>
                 {ids.map((b, j) => (
                   <td key={b} onPointerEnter={() => setTip(`${a} × ${b}: ${Number.isFinite(m[i][j]) ? m[i][j].toFixed(2) : 'n/a'}`)} onPointerLeave={() => setTip(null)} onClick={() => setTip(`${a} × ${b}: ${m[i][j].toFixed(2)}`)}
-                    style={{ width: cell, height: cell, background: color(m[i][j]), borderRadius: 4, textAlign: 'center', color: Math.abs(m[i][j]) > 0.6 ? '#fff' : 'var(--ink-2)' }}>
+                    style={{ width: cell, height: cell, background: color(m[i][j]), borderRadius: 4, textAlign: 'center', color: Math.abs(m[i][j]) > 0.6 ? (m[i][j] >= 0 ? '#06182f' : '#fff') : 'var(--ink-2)' }}>
                     {n <= 8 && i !== j ? m[i][j].toFixed(1) : ''}
                   </td>
                 ))}

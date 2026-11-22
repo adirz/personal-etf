@@ -93,6 +93,9 @@ app.post<{ Body: HoldingEdit }>('/api/holdings', async (req) => {
   return add;
 });
 
+app.get('/api/backup', async () => store.exportAll());
+app.post('/api/backup', { bodyLimit: 64 * 1024 * 1024 }, async (req) => store.importAll(req.body));
+
 app.get('/api/providers', async () => [...reg.providers.values()].map(p => ({ id: p.id, label: p.label, kinds: p.kinds, search: !!p.search })));
 app.get<{ Querystring: { q: string; provider?: string } }>('/api/search', async (req) => {
   const ps = [...reg.providers.values()].filter(p => p.search && (!req.query.provider || p.id === req.query.provider));

@@ -18,6 +18,9 @@ Open it on your phone → "Add to Home Screen". Put it behind HTTPS (Caddy/nginx
 always set `PETF_TOKEN` before exposing it; the app asks for the token once (gear → Server & token).
 Env: `PORT`, `PETF_DATA` (data dir, default `./data`), `COINGECKO_API_KEY` (optional).
 
+**Save & load:** Settings → Save to file downloads the whole portfolio (data, manual prices, cached market data) as one
+unencrypted JSON file. Load from file validates it, keeps the current data in `<data dir>/backups/` (last 10), then replaces it.
+
 ## Model
 
 | File (`data/`) | What |

@@ -26,6 +26,8 @@ export const api = {
   addTx: (t: Partial<Tx> | Partial<Tx>[]) => req<Tx[]>('POST', '/transactions', t),
   delTx: (id: string) => req('DELETE', `/transactions/${encodeURIComponent(id)}`),
   setHolding: (b: { account: string; instrument?: string; qty?: number; cost?: number; acquired?: string; price?: number; currency?: string; amount?: number }) => req<Tx[]>('POST', '/holdings', b),
+  saveFile: () => req<{ savedAt: string }>('GET', '/backup'),
+  loadFile: (backup: unknown) => req<{ autoBackup: string }>('POST', '/backup', backup),
   search: (q: string) => req<{ provider: string; symbol: string; name: string; exchange?: string; type?: string }[]>('GET', `/search?q=${encodeURIComponent(q)}`),
   addInstrument: (b: Partial<Instrument> & { provider?: string; symbol?: string }) => req<Instrument>('POST', '/instruments', b),
   uploadPrices: (id: string, csv: string) => req<{ points: number }>('POST', `/instruments/${encodeURIComponent(id)}/prices`, { csv }),

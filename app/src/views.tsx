@@ -437,7 +437,7 @@ function HoldingDetail({ h, data, reload, m }: { h: Report['holdings'][number]; 
       {h.deferredTaxBase > 0 && <div className="small ink2">Tax if sold now ≈ {m(h.deferredTaxBase)}</div>}
       {inst && <>
         <div className="small muted">Exposure source: {inst.exposureOverride ? 'your override' : exp?.source ?? 'none (unclassified)'}{exp?.asOf ? ` · ${exp.asOf}` : ''}</div>
-        <details><summary className="small" style={{ color: 'var(--s1)' }}>Edit exposure override</summary>
+        <details><summary className="small" style={{ color: 'var(--s1-ink)' }}>Edit exposure override</summary>
           <textarea value={txt} onChange={e => setTxt(e.target.value)} />
           <div className="row"><button className="btn" onClick={async () => { try { await saveInst({ exposureOverride: JSON.parse(txt) }); setMsg('Saved'); } catch (e) { setMsg(String(e)); } }}>Save override</button>
             {inst.exposureOverride && <button className="btn ghost" onClick={() => saveInst({ exposureOverride: undefined })}>Use auto</button>}</div>
@@ -528,7 +528,7 @@ function InstrumentForm({ done }: { done: (added?: Instrument) => void }) {
           <div><b>{h.symbol}</b> <span className="small muted">{h.exchange} · {h.type} · {h.provider}</span><div className="small">{h.name}</div></div>
           <button className="btn ghost" onClick={async () => { try { done(await api.addInstrument({ provider: h.provider, symbol: h.symbol, id: h.provider === 'coingecko' ? h.name.match(/\((\w+)\)$/)?.[1] ?? h.symbol : h.symbol })); } catch (e) { setErr(String(e)); } }}>Add</button>
         </div>))}</div>
-      <details><summary className="small" style={{ color: 'var(--s1)' }}>Manual instrument (Israeli fund, cash account, loan, property…)</summary>
+      <details><summary className="small" style={{ color: 'var(--s1-ink)' }}>Manual instrument (Israeli fund, cash account, loan, property…)</summary>
         <div className="grid2" style={{ marginTop: 8 }}>
           <label className="f">ID<input value={man.id ?? ''} onChange={e => setMan({ ...man, id: e.target.value })} /></label>
           <label className="f">Name (used for auto-classification)<input value={man.name ?? ''} onChange={e => setMan({ ...man, name: e.target.value })} placeholder='e.g. מחקה ת"א 125' /></label>
@@ -548,6 +548,39 @@ export function Settings({ data, reload, onServer, onDirty }: Omit<Ctx, 'report'
   const [s, setS] = useState(structuredClone(data.settings));
   const [accts, setAccts] = useState(structuredClone(data.accounts));
   useEffect(() => { onDirty(JSON.stringify(s) !== JSON.stringify(data.settings) || JSON.stringify(accts) !== JSON.stringify(data.accounts)); }, [s, accts, data]);
+  const [fileBusy, setFileBusy] = useState(false);
+  const [fileMsg, setFileMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const saveToFile = async () => {
+    setFileBusy(true); setFileMsg(null);
+    try {
+      const backup = await api.saveFile();
+      const name = `personal-etf-${backup.savedAt.slice(0, 10)}.json`;
+      const url = URL.createObjectURL(new Blob([JSON.stringify(backup)], { type: 'application/json' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = name; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      setFileMsg({ ok: true, text: `Saved ${name} to your downloads.` });
+    } catch (e) { setFileMsg({ ok: false, text: `Could not save: ${(e as Error).message}` }); }
+    setFileBusy(false);
+  };
+  const loadFromFile = async (file: File) => {
+    setFileBusy(true); setFileMsg(null);
+    try {
+      let backup: { savedAt?: string; data?: { accounts?: unknown[]; instruments?: unknown[]; transactions?: unknown[] } };
+      try { backup = JSON.parse(await file.text()); } catch { throw new Error('This is not a Personal ETF save file.'); }
+      const when = backup.savedAt ? new Date(backup.savedAt).toLocaleString() : 'unknown date';
+      const d = backup.data;
+      const summary = `${d?.accounts?.length ?? 0} accounts, ${d?.instruments?.length ?? 0} instruments, ${d?.transactions?.length ?? 0} transactions`;
+      if (confirm(`Replace ALL current data with this save?\n\n${file.name}\nSaved: ${when}\n${summary}\n\nA backup of your current data is kept on the server first.`)) {
+        const { autoBackup } = await api.loadFile(backup);
+        const fresh = await api.data();
+        setS(structuredClone(fresh.settings)); setAccts(structuredClone(fresh.accounts));
+        await reload();
+        setFileMsg({ ok: true, text: `Loaded ${file.name}. Previous data kept as backups/${autoBackup}.` });
+      }
+    } catch (e) { setFileMsg({ ok: false, text: (e as Error).message }); }
+    setFileBusy(false);
+  };
   const [log, setLog] = useState<{ item: string; ok: boolean; msg: string }[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
@@ -558,6 +591,17 @@ export function Settings({ data, reload, onServer, onDirty }: Omit<Ctx, 'report'
         <button className="btn block" disabled={busy} onClick={async () => { setBusy(true); try { setLog(await api.refresh(false)); await reload(); } catch (e) { setMsg(String(e)); } setBusy(false); }}>{busy ? 'Refreshing…' : 'Refresh prices, FX & classifications'}</button>
         {log && <div className="small" style={{ maxHeight: 200, overflow: 'auto' }}>{log.map((l, i) => <div key={i} className={l.ok ? 'muted' : 'down'}>{l.ok ? '✓' : '✕'} {l.item} — {l.msg}</div>)}</div>}
         <button className="btn ghost" onClick={onServer}>Server & token…</button>
+      </div>
+      <div className="card stack">
+        <h2>Save & load</h2>
+        <div className="row">
+          <button className="btn ghost" style={{ flex: 1 }} disabled={fileBusy} onClick={saveToFile}>Save to file</button>
+          <label className="btn ghost" style={{ flex: 1, textAlign: 'center', opacity: fileBusy ? .5 : 1, pointerEvents: fileBusy ? 'none' : undefined }}>Load from file
+            <input type="file" accept=".json,application/json" aria-label="Load from file" style={{ display: 'none' }} disabled={fileBusy} onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) loadFromFile(f); }} />
+          </label>
+        </div>
+        <div className="small muted">The file contains your whole portfolio, unencrypted, so keep it somewhere private.</div>
+        {fileMsg && <div className={fileMsg.ok ? 'small ink2' : 'err'} role="status">{fileMsg.text}</div>}
       </div>
       <div className="card stack">
         <h2>General</h2>
