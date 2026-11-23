@@ -4,6 +4,7 @@
   --page: #f1f8f5; --surface: #f8fcfa; --card: #ffffff; --ink: #10294a; --ink-2: #3f5a70; --muted: #5f7485;
   --grid: #d6e8e1; --axis: #b4d0c8; --s1: #2f76b8; --s1-ink: #2a6dab; --s2: #4fae88; --s1-soft: #d5e8f7; --neutral: #e6f1ed;
   --good: #1c7a54; --warn: #eeae32; --serious: #e08a55; --critical: #c24545; --band: rgba(79,174,136,.24);
+  --cat-gold: #d9b44a; --cat-earth: #a9825f; --cat-cash: #9fb4c2;
   --radius: 14px; --pad: 14px;
   color-scheme: light dark;
 }
@@ -12,6 +13,7 @@
     --page: #07142b; --surface: #0e2140; --card: #102545; --ink: #eaf4ff; --ink-2: #b6cbe2; --muted: #8fa7c2;
     --grid: #1f3a5f; --axis: #2e4f7a; --s1: #1a6fe0; --s1-ink: #6cb2ff; --s2: #12c46b; --s1-soft: #164a8f; --neutral: #1a3254;
     --good: #2ee08a; --warn: #fab219; --serious: #f0905f; --critical: #ff6b6b; --band: rgba(18,196,107,.22);
+    --cat-gold: #e6c65c; --cat-earth: #c09a76; --cat-cash: #6f88a3;
   }
 }
 * { box-sizing: border-box; }
@@ -81,5 +83,10 @@ details > summary { cursor: pointer; list-style: none; } details > summary::-web
 .handle span { width: 18px; height: 18px; border-radius: 50%; background: var(--card); border: 3px solid var(--s1); box-shadow: 0 1px 4px rgba(0,0,0,.3); }
 .handle:focus-visible { outline: 2px solid var(--s1-ink); }
 .handle.off { cursor: not-allowed; } .handle.off span { border-color: var(--muted); }
+.mix { display: flex; gap: 2px; height: 10px; border-radius: 5px; overflow: hidden; margin: 8px 0 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 12px; color: var(--ink-2); }
+.legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+.profile { display: block; width: 100%; text-align: left; background: var(--card); border: 1px solid var(--grid); border-radius: 12px; padding: 12px; cursor: pointer; }
+.profile.on { border-color: var(--s1-ink); box-shadow: 0 0 0 1px var(--s1-ink); }
 .chip.hold { padding: 1px 8px; font-size: 11px; margin-left: 4px; }
 .sheet { background: var(--page); width: 100%; max-width: 720px; max-height: 92vh; overflow: auto; border-radius: 18px 18px 0 0; padding: 16px 14px calc(env(safe-area-inset-bottom) + 18px); }

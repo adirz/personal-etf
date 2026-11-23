@@ -1,3 +1,4 @@
+import { globesProvider } from './globes.js';
 import { coingeckoProvider, frankfurterFx, manualProvider } from './others.js';
 import type { FxProvider, Provider } from './types.js';
 import { yahooProvider } from './yahoo.js';
@@ -15,5 +16,6 @@ export class Registry {
 export const defaultRegistry = () => new Registry()
   .register(yahooProvider())
   .register(coingeckoProvider())
+  .register(globesProvider())
   .register(manualProvider())
   .registerFx(frankfurterFx());

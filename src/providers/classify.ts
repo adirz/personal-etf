@@ -2,6 +2,7 @@
  * Automatic look-through classification. Pure functions over provider metadata, so they are
  * testable offline and reusable by any provider that can supply the same fields.
  */
+import { GLOBAL_REGION_SPLIT } from '../core/regions.js';
 import type { ExposureSpec } from '../core/types.js';
 
 export interface FundMeta {
@@ -19,7 +20,7 @@ export interface FundMeta {
 }
 
 /** Rough cap-weighted split of a "global" fund, used when only the label is known. Tunable. */
-export const GLOBAL_SPLIT = { US: 0.63, developed_ex_us: 0.26, emerging: 0.11 };
+export const GLOBAL_SPLIT = GLOBAL_REGION_SPLIT;
 const REGION_CCY: Record<string, string> = { US: 'USD', Israel: 'ILS', developed_ex_us: 'other_developed', emerging: 'emerging' };
 
 const SECTOR_KEYS: Record<string, string> = {
@@ -55,8 +56,8 @@ export function regionOf(m: FundMeta): Record<string, number> | undefined {
   const cat = m.category ?? '', name = m.name ?? '';
   const t = `${cat} | ${name}`;
   if (/israel|tel[- ]aviv|\bTA[- ]?(35|90|125)\b|ת"?א|תל[- ]אביב|ישראל|שקל/i.test(t)) return { Israel: 1 };
-  if (/emerging|china|india|latin america|pacific\/asia ex-japan|diversified emerging|EM\b|שווקים מתעוררים/i.test(t)) return { emerging: 1 };
-  if (/foreign|international|developed|EAFE|ex[- ]us|europe|japan|אירופה|יפן/i.test(t)) return { developed_ex_us: 1 };
+  if (/emerging|china|india|poland|latin america|pacific\/asia ex-japan|diversified emerging|EM\b|שווקים מתעוררים/i.test(t)) return { emerging: 1 };
+  if (/foreign|international|developed|EAFE|ex[- ]us|europe|japan|switzerland|pacific|אירופה|יפן/i.test(t)) return { developed_ex_us: 1 };
   if (/world|global|all[- ]world|ACWI|total international|עולמי|MSCI World/i.test(t)) return { ...GLOBAL_SPLIT };
   if (/s&p|nasdaq|נאסד"?ק|russell|dow|total (stock )?market|\bUS\b|U\.S\.|large (blend|growth|value)|mid-cap|small (blend|growth|value)|intermediate|long government|short government|short-term bond|ultrashort|high yield|corporate bond|inflation-protected|muni|technology|health|financial|real estate|communications|consumer|industrials|utilities|equity energy|natural resources|ארה"?ב/i.test(t)) return { US: 1 };
   if (m.exchange && /TLV|TASE/i.test(m.exchange)) return { Israel: 1 };

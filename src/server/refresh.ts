@@ -9,7 +9,8 @@ const EXPOSURE_TTL_DAYS = 7;
 /** Pull prices, FX and look-through exposures for everything in the portfolio. Never throws per item. */
 export async function refresh(store: Store, reg: Registry, data: Data, opts: { force?: boolean } = {}) {
   const log: { item: string; ok: boolean; msg: string }[] = [];
-  const firstTx = data.transactions.map(t => t.date).sort()[0] ?? daysAgo(365);
+  // A lot's purchase date can predate its ledger entry, and its cost needs the FX rate of that day.
+  const firstTx = data.transactions.map(t => t.acquired ?? t.date).sort()[0] ?? daysAgo(365);
   const start = iso(Math.min(Date.parse(firstTx) - 10 * 864e5, Date.now() - 400 * 864e5)); // ≥ ~1y for risk stats
 
   const pull = async (id: string, provider: string, symbol: string) => {

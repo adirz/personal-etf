@@ -21,6 +21,10 @@ Env: `PORT`, `PETF_DATA` (data dir, default `./data`), `COINGECKO_API_KEY` (opti
 **Save & load:** Settings → Save to file downloads the whole portfolio (data, manual prices, cached market data) as one
 unencrypted JSON file. Load from file validates it, keeps the current data in `<data dir>/backups/` (last 10), then replaces it.
 
+**Broker import:** Holdings → Import broker file reads the Excel "יתרות מקוונות" export and shows a preview first. Tickers are
+matched by name and confirmed against the live price, and rows with no match keep the broker's price. Purchase dates default to
+the last day the asset traded at its average cost. Re-importing a newer export updates the holdings.
+
 ## Model
 
 | File (`data/`) | What |

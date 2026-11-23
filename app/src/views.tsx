@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { parseSymbols } from '../../src/core/symbols';
-import { api, fmtMoney, label, num, pct, type BulkResult, type Data, type RebalanceResult, type Report, type Tx, type Instrument, type ExposureSpec } from './api';
+import { api, fmtMoney, label, num, pct, type BulkResult, type ImportPreview, type ImportResult, type TradesPreview, type TradesResult, type LinkReview, type ClassificationReview, type Data, type RebalanceResult, type Report, type Tx, type Instrument, type ExposureSpec } from './api';
 import { Bullet, HBars, Heatmap, LineChart, RiskBars } from './charts';
+import { specFromSimple, type SimpleClassification } from '../../src/core/classification';
+import { ALL_PROFILES, EQUITY_TILTS, profileRules, shareToMove, type EquityTilt } from '../../src/core/profiles';
 import { bandPP, setWeight } from '../../src/core/targets';
 import type { TargetRule, Targets as TargetsData } from '../../src/core/types';
 
@@ -69,6 +71,7 @@ export function Overview({ report: r }: Ctx) {
 // ───────────────────────── Targets / drift ─────────────────────────
 export function Targets({ data, report: r, reload }: Ctx) {
   const [editing, setEditing] = useState(false);
+  const [choosing, setChoosing] = useState(false);
   const [draft, setDraft] = useState<TargetsData | null>(null);
   const [held, setHeld] = useState<Set<string>>(new Set());
   const [saveMsg, setSaveMsg] = useState('');
@@ -118,6 +121,9 @@ export function Targets({ data, report: r, reload }: Ctx) {
             : <><button className="btn ghost" onClick={unlock}>Unlock to drag</button><button className="btn ghost" onClick={() => setEditing(true)}>Edit</button></>}
         </div>
       </div>
+      <ClassifyPrompt data={data} report={r} reload={reload} />
+      {!draft && <button className="btn block" style={{ marginBottom: 12 }} onClick={() => setChoosing(true)}>Choose a portfolio profile</button>}
+      {choosing && <ProfilePicker data={data} report={r} reload={reload} close={() => setChoosing(false)} />}
       {draft && <div className="warnbox" style={{ marginBottom: 12 }}>Drag a round handle to set a target. The others in that group adjust to keep 100%, and changes save automatically. Use <b>Hold</b> to keep a value fixed. {saveMsg && <b>{saveMsg}</b>}</div>}
       {(sleeveTarget > 0 || draft) && <div className="card">
         <div className="row between"><h3>Exception sleeve</h3><span className={`status ${sleeveOut ? 'out' : 'ok'}`}>{sleeveOut ? '⚠ Out' : '✓ OK'}</span></div>
@@ -155,6 +161,83 @@ export function Targets({ data, report: r, reload }: Ctx) {
       ))}
       <div className="small muted">Bar = actual, tick = target, shaded = tolerance band. Percentages are of the scope's value.</div>
     </>
+  );
+}
+
+const MIX_COLORS: Record<string, string> = { equity: 'var(--s1)', bond: 'var(--s2)', precious_metals: 'var(--cat-gold)', commodity: 'var(--cat-earth)', cash: 'var(--cat-cash)' };
+const MIX_LABELS: Record<string, string> = { equity: 'Stocks', bond: 'Bonds', precious_metals: 'Gold', commodity: 'Commodities', cash: 'Cash' };
+
+function ProfilePicker({ data, report: r, reload, close }: { data: Data; report: Report; reload: () => Promise<void>; close: () => void }) {
+  const [tilt, setTilt] = useState<EquityTilt>('global');
+  const [selected, setSelected] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [undo, setUndo] = useState<TargetsData | null>(null);
+  const [previous, setPrevious] = useState<TargetsData | null>(null);
+  useEffect(() => { api.previousTargets().then(x => setPrevious(x.targets)).catch(() => {}); }, [data.targets]);
+  const m = money(r);
+  const actual = r.breakdowns.assetClass ?? {};
+  const previousMix = previous?.rules.find(x => x.dimension === 'assetClass' && !Object.keys(x.scope).length)?.weights;
+  const cards = [
+    ...(previous ? [{ id: 'previous', name: 'Your previous targets', summary: 'The targets you had before your last profile change.', risk: null, assetClass: previousMix ?? {}, rules: previous.rules }] : []),
+    ...ALL_PROFILES.map(p => ({ id: p.id, name: p.name, summary: p.summary, risk: p.risk as number | null, assetClass: p.assetClass, rules: profileRules(p.id, tilt) })),
+  ];
+  const moves = ALL_PROFILES.map(p => ({ id: p.id, pct: shareToMove(actual, r.investable, p.assetClass) }));
+  const closest = moves.reduce((a, b) => (b.pct < a.pct ? b : a)).id;
+  const sameRules = (rules: TargetRule[]) => JSON.stringify(rules.map(x => [x.scope, x.dimension, x.weights])) === JSON.stringify(data.targets.rules.map(x => [x.scope, x.dimension, x.weights]));
+  const apply = async () => {
+    const profile = cards.find(p => p.id === selected);
+    if (!profile || !confirm(`Replace your current targets with "${profile.name}"?\n\nThis changes targets only. No trades are made.`)) return;
+    setBusy(true); setErr('');
+    try { const before = structuredClone(data.targets); await api.applyProfile(selected, tilt); await reload(); setUndo(before); }
+    catch (e) { setErr((e as Error).message); }
+    setBusy(false);
+  };
+  const revert = async () => {
+    setBusy(true); setErr('');
+    try { await api.put('targets', undo); await reload(); setUndo(null); setSelected(''); }
+    catch (e) { setErr((e as Error).message); }
+    setBusy(false);
+  };
+  return (
+    <Sheet title="Choose a portfolio profile" close={close}>
+      <div className="small muted">Stock region</div>
+      <div className="seg">{(Object.keys(EQUITY_TILTS) as EquityTilt[]).map(k => <button key={k} className={tilt === k ? 'on' : ''} onClick={() => setTilt(k)}>{EQUITY_TILTS[k].label}</button>)}</div>
+      <div className="small muted">{EQUITY_TILTS[tilt].detail}: {Object.entries(EQUITY_TILTS[tilt].weights).map(([k, v]) => `${label(k === 'developed_ex_us' ? 'other developed' : k)} ${v}%`).join(' · ')}</div>
+      {cards.map(p => {
+        const move = p.id === 'previous' ? shareToMove(actual, r.investable, p.assetClass) : moves.find(x => x.id === p.id)!.pct;
+        const active = sameRules(p.rules);
+        return (
+          <button key={p.id} className={`profile ${selected === p.id ? 'on' : ''}`} aria-pressed={selected === p.id} onClick={() => setSelected(p.id)}>
+            <div className="row between">
+              <b>{p.name}</b>
+              <span className="row" style={{ gap: 4 }}>
+                {active && <span className="status ok">Current</span>}
+                {closest === p.id && !active && <span className="tag">Closest to you</span>}
+                {p.risk !== null && <span className="small muted">Risk {p.risk}/5</span>}
+              </span>
+            </div>
+            <div className="small ink2" style={{ marginTop: 2 }}>{p.summary}</div>
+            <div className="mix" aria-hidden="true">{Object.entries(p.assetClass).map(([k, v]) => <span key={k} style={{ width: `${v}%`, background: MIX_COLORS[k] }} />)}</div>
+            <div className="legend">{Object.entries(p.assetClass).map(([k, v]) => <span key={k}><i style={{ background: MIX_COLORS[k] }} />{MIX_LABELS[k]} {v}%</span>)}</div>
+            <div className="small muted" style={{ marginTop: 4 }}>Reaching it means moving about {move.toFixed(0)}% of your portfolio ({m((move / 100) * r.investable, true)})</div>
+            {selected === p.id && <div className="stack" style={{ marginTop: 8, borderTop: '1px solid var(--grid)', paddingTop: 8 }}>
+              {p.rules.filter(x => Object.keys(x.scope).length > 0).map(x => (
+                <div className="small" key={x.id}>
+                  <b>{scopeLabel(x.scope)} by {label(x.dimension)}</b>
+                  <div className="ink2 num">{Object.entries(x.weights).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k === 'developed_ex_us' ? 'Other developed' : label(k)} ${v}%`).join(' · ')}</div>
+                </div>
+              ))}
+            </div>}
+          </button>
+        );
+      })}
+      <div className="small muted">These are generic model allocations, not personal financial advice. Applying one changes your targets only. Your previous targets stay available here.</div>
+      {err && <div className="err">{err}</div>}
+      {undo
+        ? <div className="row"><span className="small ink2" role="status" style={{ flex: 1 }}>Targets updated.</span><button className="btn ghost" disabled={busy} onClick={revert}>Undo</button><button className="btn" onClick={close}>Done</button></div>
+        : <button className="btn block" disabled={!selected || busy} onClick={apply}>{selected ? `Use ${cards.find(p => p.id === selected)?.name ?? 'profile'}` : 'Select a profile'}</button>}
+    </Sheet>
   );
 }
 
@@ -290,6 +373,10 @@ export function Holdings({ data, report: r, reload }: Ctx) {
   const m = money(r);
   const [open, setOpen] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importingTrades, setImportingTrades] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
+  const unlinked = r.holdings.filter(h => h.kind === 'manual' && /^\d+$/.test(h.instrument)).length;
   const groups = useMemo(() => {
     const g: Record<string, Report['holdings']> = {};
     for (const h of r.holdings) (g[h.account] ??= []).push(h);
@@ -298,8 +385,20 @@ export function Holdings({ data, report: r, reload }: Ctx) {
   }, [r]);
   return (
     <>
-      <button className="btn block" style={{ marginBottom: 12 }} onClick={() => setAdding(true)}>+ Add holding</button>
+      {unlinked > 0 && <div className="warnbox row between" style={{ marginBottom: 12 }}>
+        <span>{unlinked} holding{unlinked === 1 ? ' has' : 's have'} no live price.</span>
+        <button className="btn" style={{ whiteSpace: 'nowrap' }} onClick={() => setReviewing(true)}>Review tickers</button>
+      </div>}
+      {reviewing && <LinkReviewSheet reload={reload} close={() => setReviewing(false)} />}
+      <ClassifyPrompt data={data} report={r} reload={reload} />
+      <button className="btn block" style={{ marginBottom: 8 }} onClick={() => setAdding(true)}>+ Add holding</button>
+      <div className="row" style={{ marginBottom: 12 }}>
+        <button className="btn ghost" style={{ flex: 1 }} onClick={() => setImportingTrades(true)}>Import trade history</button>
+        <button className="btn ghost" style={{ flex: 1 }} onClick={() => setImporting(true)}>Import broker file</button>
+      </div>
       {adding && <AddHolding data={data} report={r} reload={reload} close={() => setAdding(false)} />}
+      {importing && <BrokerImport data={data} report={r} reload={reload} close={() => setImporting(false)} />}
+      {importingTrades && <TradesImport data={data} reload={reload} close={() => setImportingTrades(false)} next={() => { setImportingTrades(false); setImporting(true); }} />}
       {Object.entries(groups).map(([acct, hs]) => (
         <div className="card" key={acct}>
           <div className="row between"><h2 style={{ margin: 0 }}>{data.accounts.find(a => a.id === acct)?.name ?? acct}</h2><span className="num small ink2">{m(hs.reduce((s, h) => s + h.value, 0), true)}</span></div>
@@ -307,7 +406,8 @@ export function Holdings({ data, report: r, reload }: Ctx) {
             {hs.map(h => (
               <div className="item" key={h.key} onClick={() => setOpen(open === h.key ? null : h.key)} style={{ cursor: 'pointer' }}>
                 <div className="row between">
-                  <div><b>{h.name}</b> {h.excluded && <span className="tag">sleeve</span>} {h.kind === 'debt' && <span className="tag">debt</span>}
+                  <div><b dir="auto">{hasTicker(h) ? h.instrument : h.name}</b> {h.excluded && <span className="tag">sleeve</span>}
+                    {hasTicker(h) && h.name !== h.instrument && <div className="small ink2" dir="auto">{h.name}</div>} {h.kind === 'debt' && <span className="tag">debt</span>}
                     <div className="small muted num">{h.kind === 'cash' || h.kind === 'debt' ? h.ccy : `${+h.qty.toFixed(6)} × ${h.price.toFixed(2)} ${h.ccy}`}</div></div>
                   <div style={{ textAlign: 'right' }}><div className="num"><b>{m(h.value)}</b></div>
                     {h.unrealizedBase !== undefined && <div className={`small num ${h.unrealizedBase >= 0 ? 'up' : 'down'}`}>{h.unrealizedBase >= 0 ? '+' : ''}{m(h.unrealizedBase)}</div>}</div>
@@ -323,7 +423,323 @@ export function Holdings({ data, report: r, reload }: Ctx) {
   );
 }
 
+/** Israeli funds are identified by a security number rather than a ticker, so their name is shown instead. */
+const hasTicker = (h: { kind: string; instrument: string }) => (h.kind === 'security' || h.kind === 'crypto') && !/^\d+(\.globes)?$/.test(h.instrument);
 const dec = (v: number) => String(+v.toFixed(6));
+const NEW_ACCOUNT = '__new';
+const readBase64 = (file: File) => new Promise<string>((resolve, reject) => {
+  const fr = new FileReader();
+  fr.onload = () => resolve(String(fr.result).split(',')[1] ?? '');
+  fr.onerror = () => reject(new Error('Could not read the file.'));
+  fr.readAsDataURL(file);
+});
+
+const CLASS_OPTIONS: [string, string][] = [['equity', 'Stocks'], ['bond', 'Bonds'], ['precious_metals', 'Gold and precious metals'], ['commodity', 'Commodities'], ['cash', 'Cash or money market'], ['crypto', 'Crypto']];
+const REGION_OPTIONS: [string, string][] = [['US', 'US'], ['Israel', 'Israel'], ['developed_ex_us', 'Other developed'], ['emerging', 'Emerging markets'], ['global', 'Global']];
+const SECTOR_OPTIONS = ['technology', 'financial_services', 'healthcare', 'energy', 'basic_materials', 'industrials', 'consumer_cyclical', 'consumer_defensive', 'communication_services', 'real_estate', 'utilities'];
+
+/** Shown wherever missing classifications would make the numbers misleading. */
+function ClassifyPrompt({ data, report, reload }: { data: Data; report: Report; reload: () => Promise<void> }) {
+  const [review, setReview] = useState<ClassificationReview | null>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => { let live = true; api.classificationReview().then(x => { if (live) setReview(x); }).catch(() => {}); return () => { live = false; }; }, [report]);
+  if (!review?.items.length) return null;
+  const total = review.items.reduce((s, i) => s + i.value, 0);
+  return (
+    <>
+      <div className="warnbox row between" style={{ marginBottom: 12 }}>
+        <span>{review.items.length} holding{review.items.length === 1 ? '' : 's'} ({fmtMoney(total, report.base, true)}) need{review.items.length === 1 ? 's' : ''} a classification.</span>
+        <button className="btn" style={{ whiteSpace: 'nowrap' }} onClick={() => setOpen(true)}>Classify</button>
+      </div>
+      {open && <ClassifySheet data={data} review={review} base={report.base} reload={reload} close={() => setOpen(false)} />}
+    </>
+  );
+}
+
+function ClassifySheet({ data, review, base, reload, close }: { data: Data; review: ClassificationReview; base: string; reload: () => Promise<void>; close: () => void }) {
+  const [forms, setForms] = useState<Record<string, Partial<SimpleClassification>>>(() => Object.fromEntries(review.items.map(i => [i.id, { ...i.current }])));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const update = (id: string, patch: Partial<SimpleClassification>) => setForms(f => ({ ...f, [id]: { ...f[id], ...patch } }));
+  const complete = (c: Partial<SimpleClassification>) => !!c.assetClass && (!['equity', 'bond'].includes(c.assetClass) || !!c.region);
+  const ready = review.items.filter(i => complete(forms[i.id]));
+  const save = async () => {
+    setBusy(true); setErr('');
+    try {
+      const chosen = new Map(ready.map(i => [i.id, specFromSimple(forms[i.id] as SimpleClassification)]));
+      await api.put('instruments', data.instruments.map(i => (chosen.has(i.id) ? { ...i, exposureOverride: chosen.get(i.id) } : i)));
+      await reload();
+      close();
+    } catch (e) { setErr((e as Error).message); setBusy(false); }
+  };
+  const select = (name: string, title: string, value: string | undefined, options: [string, string][], set: (v: string) => void) => (
+    <label className="f">{title}<select aria-label={`${title} for ${name}`} value={value ?? ''} onChange={e => set(e.target.value)}>
+      <option value="">Choose…</option>
+      {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+    </select></label>
+  );
+  return (
+    <Sheet title="Classify holdings" close={close}>
+      <div className="small muted">This tells the app what each holding is, so targets and rebalancing count it correctly. You can change it later in the holding's details.</div>
+      {review.waitingForTicker > 0 && <div className="small ink2">{review.waitingForTicker} more will classify automatically once you approve their tickers.</div>}
+      <div className="list">
+        {review.items.map(i => {
+          const c = forms[i.id];
+          return (
+            <div className="item stack" key={i.id}>
+              <div className="row between"><b dir="auto">{i.name}</b><span className="small muted num">{fmtMoney(i.value, base, true)}</span></div>
+              <div className="grid2">
+                {select(i.name, 'Type', c.assetClass, CLASS_OPTIONS, v => update(i.id, { assetClass: v }))}
+                {['equity', 'bond'].includes(c.assetClass ?? '') && select(i.name, 'Region', c.region, REGION_OPTIONS, v => update(i.id, { region: v }))}
+                {c.assetClass === 'equity' && select(i.name, 'Sector (optional)', c.sector, SECTOR_OPTIONS.map(s => [s, label(s)]), v => update(i.id, { sector: v || undefined }))}
+                {c.assetClass === 'bond' && select(i.name, 'Bond type (optional)', c.bondType, [['government', 'Government'], ['corporate', 'Corporate']], v => update(i.id, { bondType: v || undefined }))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {err && <div className="err">{err}</div>}
+      <button className="btn block" disabled={busy || !ready.length} onClick={save}>{busy ? 'Saving…' : `Save ${ready.length} classification${ready.length === 1 ? '' : 's'}`}</button>
+    </Sheet>
+  );
+}
+
+const PRICE_GAP = 0.05;
+
+function LinkReviewSheet({ reload, close }: { reload: () => Promise<void>; close: () => void }) {
+  const [review, setReview] = useState<LinkReview | null>(null);
+  const [tickers, setTickers] = useState<Record<string, string>>({});
+  const [approved, setApproved] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [done, setDone] = useState<{ linked: number; autoBackup: string } | null>(null);
+  useEffect(() => {
+    api.linkReview().then(x => { setReview(x); setTickers(Object.fromEntries(x.items.map(i => [i.id, i.suggestion?.ticker ?? '']))); }).catch(e => setErr((e as Error).message));
+  }, []);
+  const gap = (i: LinkReview['items'][number]) => !!i.suggestion && tickers[i.id] === i.suggestion.ticker && i.price !== null && i.suggestion.price !== null && Math.abs(i.suggestion.price / i.price - 1) > PRICE_GAP;
+  const toggle = (id: string) => setApproved(s => { const n = new Set(s); if (!n.delete(id)) n.add(id); return n; });
+  const approveAll = () => setApproved(new Set(review!.items.filter(i => i.suggestion && tickers[i.id] === i.suggestion.ticker && !gap(i)).map(i => i.id)));
+  const ready = [...approved].filter(id => tickers[id]?.trim());
+  const apply = async () => {
+    setBusy(true); setErr('');
+    try { setDone(await api.applyLinks(Object.fromEntries(ready.map(id => [id, tickers[id]])))); await reload(); }
+    catch (e) { setErr((e as Error).message); }
+    setBusy(false);
+  };
+  if (done) return (
+    <Sheet title="Tickers linked" close={close}>
+      <div className="ink2">{done.linked} holding{done.linked === 1 ? ' now updates' : 's now update'} from live prices. These links are remembered for future imports.</div>
+      <div className="small muted">Previous data kept as backups/{done.autoBackup}.</div>
+      <button className="btn block" onClick={close}>Done</button>
+    </Sheet>
+  );
+  return (
+    <Sheet title="Review tickers" close={close}>
+      {!review && !err && <div className="small muted" role="status">Loading…</div>}
+      {err && <div className="err">{err}</div>}
+      {review && <>
+        <div className="small muted">Check each suggestion. Nothing is linked until you tick it, and you only do this once.</div>
+        <button className="btn ghost block" onClick={approveAll}>Approve all suggestions with matching prices</button>
+        <datalist id="link-options">{review.options.map(o => <option key={o.ticker} value={o.ticker}>{o.name}</option>)}</datalist>
+        <div className="list">
+          {review.items.map(i => {
+            const chosen = tickers[i.id] ?? '';
+            const isSuggested = i.suggestion?.ticker === chosen;
+            return (
+              <div className="item" key={i.id}>
+                <div className="row between">
+                  <label className="row small" style={{ flex: 1, minWidth: 0 }}>
+                    <input type="checkbox" style={{ width: 'auto', flex: 'none' }} aria-label={`Approve ${i.name}`} checked={approved.has(i.id)} disabled={!chosen.trim()} onChange={() => toggle(i.id)} />
+                    <b dir="auto">{i.name}</b>
+                  </label>
+                  <input aria-label={`Ticker for ${i.name}`} list="link-options" style={{ width: 104, padding: '5px 8px', fontSize: 14, flex: 'none' }} placeholder="Ticker" spellCheck={false} autoCapitalize="characters"
+                    value={chosen} onChange={e => { const v = e.target.value.toUpperCase(); setTickers({ ...tickers, [i.id]: v }); setApproved(s => { const n = new Set(s); n.delete(i.id); return n; }); }} />
+                </div>
+                <div className="small muted num" style={{ marginTop: 3 }}>Broker: {i.price?.toFixed(2) ?? '—'} {i.currency}{isSuggested && i.suggestion ? ` · ${i.suggestion.ticker}: ${i.suggestion.price?.toFixed(2) ?? '—'}` : ''}</div>
+                {isSuggested && i.suggestion && <div className="small ink2" dir="auto">{i.suggestion.name}</div>}
+                {!i.suggestion && <div className="small muted">No confident suggestion. Enter the ticker if you know it.</div>}
+                {gap(i) && <div className="warnbox" style={{ marginTop: 4 }}>Prices differ by more than {PRICE_GAP * 100}%. Check this one before approving.</div>}
+              </div>
+            );
+          })}
+        </div>
+        <button className="btn block" disabled={busy || !ready.length} onClick={apply}>{busy ? 'Linking and fetching prices…' : `Link ${ready.length} holding${ready.length === 1 ? '' : 's'}`}</button>
+      </>}
+    </Sheet>
+  );
+}
+
+function TradesImport({ data, reload, close, next }: { data: Data; reload: () => Promise<void>; close: () => void; next: () => void }) {
+  const [file, setFile] = useState('');
+  const [preview, setPreview] = useState<TradesPreview | null>(null);
+  const [account, setAccount] = useState(data.accounts.find(a => a.currency !== 'ILS')?.id ?? NEW_ACCOUNT);
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const [result, setResult] = useState<TradesResult | null>(null);
+  const choose = async (f: File) => {
+    setBusy('Reading the file…'); setErr('');
+    try { const b64 = await readBase64(f); setPreview(await api.tradesPreview(b64)); setFile(b64); }
+    catch (e) { setErr((e as Error).message); }
+    setBusy('');
+  };
+  const apply = async () => {
+    setBusy('Importing and fetching price history…'); setErr('');
+    try { setResult(await api.tradesApply(file, account)); await reload(); }
+    catch (e) { setErr((e as Error).message); }
+    setBusy('');
+  };
+  if (result) return (
+    <Sheet title="Trade history imported" close={close}>
+      <table className="t"><tbody>
+        <tr><td>Ledger entries</td><td>{result.transactions}</td></tr>
+        <tr><td>Instruments added</td><td>{result.instrumentsAdded}</td></tr>
+        <tr><td>Held before the file starts</td><td>{result.openings}</td></tr>
+        {result.endingCash !== null && <tr><td>Cash balance</td><td>{fmtMoney(result.endingCash, result.baseCurrency)}</td></tr>}
+      </tbody></table>
+      <div className="warnbox"><b>Your holdings aren't complete yet.</b> This file only covers {preview?.from} to {preview?.to}, so anything bought earlier is missing or understated. Import the broker holdings file next.</div>
+      {result.unavailable.length > 0 && <div className="warnbox">No market data found for: {result.unavailable.join(', ')}.</div>}
+      <div className="small muted">Previous data kept as backups/{result.autoBackup}.</div>
+      <button className="btn block" onClick={next}>Next: import holdings file</button>
+      <button className="btn ghost block" onClick={close}>Close</button>
+    </Sheet>
+  );
+  return (
+    <Sheet title="Import trade history" close={close}>
+      {!preview && <>
+        <div className="small muted">Choose the Interactive Brokers transaction history CSV. Import it before the holdings file, so its tickers can identify your holdings.</div>
+        <label className="btn block" style={{ textAlign: 'center', opacity: busy ? .5 : 1, pointerEvents: busy ? 'none' : undefined }}>Choose CSV file
+          <input type="file" accept=".csv,text/csv" aria-label="Trade history file" style={{ display: 'none' }} disabled={!!busy} onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) choose(f); }} />
+        </label>
+      </>}
+      {busy && <div className="small ink2" role="status">{busy}</div>}
+      {err && <div className="err">{err}</div>}
+      {preview && <>
+        <div className="small ink2">{preview.from} to {preview.to}</div>
+        <table className="t"><tbody>
+          <tr><td>Buys and sells</td><td>{preview.trades}</td></tr>
+          <tr><td>Dividends</td><td>{preview.dividends}</td></tr>
+          <tr><td>Dividend tax</td><td>{preview.taxes}</td></tr>
+          <tr><td>Interest</td><td>{preview.interest}</td></tr>
+          <tr><td>Deposits and withdrawals</td><td>{preview.deposits}</td></tr>
+          {preview.endingCash !== null && <tr><td>Ending cash</td><td>{fmtMoney(preview.endingCash, preview.baseCurrency)}</td></tr>}
+        </tbody></table>
+        <div className="small muted">{preview.tickers.length} tickers: {preview.tickers.join(', ')}</div>
+        {preview.warnings.map(w => <div className="warnbox" key={w}>{w}</div>)}
+        <label className="f">Import into<select value={account} onChange={e => setAccount(e.target.value)}>
+          {data.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+          <option value={NEW_ACCOUNT}>+ New account</option>
+        </select></label>
+        <button className="btn block" disabled={!!busy} onClick={apply}>{busy ? 'Working…' : 'Import trade history'}</button>
+      </>}
+    </Sheet>
+  );
+}
+
+function BrokerImport({ data, report, reload, close }: { data: Data; report: Report; reload: () => Promise<void>; close: () => void }) {
+  const [file, setFile] = useState('');
+  const [preview, setPreview] = useState<ImportPreview | null>(null);
+  const [symbols, setSymbols] = useState<Record<string, string>>({});
+  const [foreign, setForeign] = useState(data.accounts.find(a => a.currency !== 'ILS')?.id ?? NEW_ACCOUNT);
+  const [local, setLocal] = useState(data.accounts.find(a => a.currency === 'ILS')?.id ?? NEW_ACCOUNT);
+  const [removeMissing, setRemoveMissing] = useState(false);
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const [result, setResult] = useState<ImportResult | null>(null);
+  const ils = (v: number) => fmtMoney(v, 'ILS');
+
+  const choose = async (f: File) => {
+    setBusy('Reading the file and matching tickers…'); setErr(''); setPreview(null);
+    try {
+      const b64 = await readBase64(f);
+      const p = await api.importPreview(b64);
+      setFile(b64); setPreview(p);
+      setSymbols(Object.fromEntries(p.rows.map(x => [x.id, x.symbol ?? ''])));
+    } catch (e) { setErr((e as Error).message); }
+    setBusy('');
+  };
+  const apply = async () => {
+    setBusy('Importing and fetching price history…'); setErr('');
+    try {
+      const chosen = Object.fromEntries(Object.entries(symbols).map(([k, v]) => [k, v.trim() || 'manual']));
+      setResult(await api.importApply({ file, symbols: chosen, accounts: { foreign, local }, removeMissing }));
+      await reload();
+    } catch (e) { setErr((e as Error).message); }
+    setBusy('');
+  };
+  const statusOf = (x: ImportPreview['rows'][number]) => {
+    const h = report.holdings.find(y => y.account === (x.listedInIls ? local : foreign) && y.instrument === x.instrumentId);
+    if (!h) return 'New';
+    const q = h.lots.reduce((s, l) => s + l.qty, 0);
+    const cost = q ? h.lots.reduce((s, l) => s + l.qty * l.cost, 0) / q : 0;
+    return Math.abs(h.qty - x.qty) < 1e-6 && Math.abs(cost / x.cost - 1) < 0.001 ? 'Same' : 'Update';
+  };
+  const accountSelect = (title: string, value: string, set: (v: string) => void) => (
+    <label className="f">{title}<select value={value} onChange={e => set(e.target.value)}>
+      {data.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+      <option value={NEW_ACCOUNT}>+ New account</option>
+    </select></label>
+  );
+
+  if (result) return (
+    <Sheet title="Import complete" close={close}>
+      <table className="t"><tbody>
+        <tr><td>New holdings</td><td>{result.created}</td></tr>
+        <tr><td>Updated</td><td>{result.updated}</td></tr>
+        <tr><td>Unchanged</td><td>{result.unchanged}</td></tr>
+        {result.removed > 0 && <tr><td>Removed</td><td>{result.removed}</td></tr>}
+        <tr><td>Instruments added</td><td>{result.instrumentsAdded}</td></tr>
+        <tr><td>Without live prices</td><td>{result.manual}</td></tr>
+      </tbody></table>
+      {result.manual > 0 && <div className="small muted">Holdings without live prices keep the broker's price until your next import.</div>}
+      {result.priceNotices.map(n => <div className="warnbox" key={n}>{n}</div>)}
+      <div className="small muted">Previous data kept as backups/{result.autoBackup}.</div>
+      <button className="btn block" onClick={close}>Done</button>
+    </Sheet>
+  );
+
+  const missing = preview?.rows.filter(x => !symbols[x.id]?.trim()).length ?? 0;
+  return (
+    <Sheet title="Import broker file" close={close}>
+      {!preview && <>
+        <div className="small muted">Choose the Excel holdings export from your broker. You'll see a preview before anything changes.</div>
+        <label className="btn block" style={{ textAlign: 'center', opacity: busy ? .5 : 1, pointerEvents: busy ? 'none' : undefined }}>Choose Excel file
+          <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" aria-label="Broker file" style={{ display: 'none' }} disabled={!!busy}
+            onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) choose(f); }} />
+        </label>
+      </>}
+      {busy && <div className="small ink2" role="status">{busy}</div>}
+      {err && <div className="err">{err}</div>}
+      {preview && <>
+        <div className="small ink2">{preview.rows.length} holdings · {ils(preview.totalIls)}{preview.asOf ? ` · as of ${preview.asOf}` : ''}</div>
+        {preview.unlistedIls !== undefined && <div className="warnbox">The broker's percentages imply about <b>{ils(preview.unlistedIls)}</b> that isn't listed in this file, such as cash or a negative balance. It won't be imported. Add it in Holdings if it's real.</div>}
+        {preview.warnings.map(w => <div className="warnbox" key={w}>{w}</div>)}
+        <div className="grid2">
+          {accountSelect('Foreign holdings go to', foreign, setForeign)}
+          {accountSelect('Israeli holdings go to', local, setLocal)}
+        </div>
+        {missing > 0 && <div className="warnbox">{missing} couldn't be identified from the file. Choose each ticker once and it's remembered for future imports, or leave it empty to keep the broker's price.</div>}
+        <datalist id="known-tickers">{preview.knownTickers.map(t => <option key={t} value={t} />)}</datalist>
+        <div className="list">
+          {preview.rows.map(x => (
+            <div className="item" key={x.id}>
+              <div className="row between">
+                <b className="small" dir="auto">{x.name}</b>
+                <span className="tag">{statusOf(x)}</span>
+              </div>
+              <div className="row between" style={{ marginTop: 4 }}>
+                <span className="small muted num">{+x.qty.toFixed(4)} × {x.price.toFixed(2)} · cost {x.cost.toFixed(2)} · {ils(x.valueIls)}</span>
+                <input aria-label={`Ticker for ${x.name}`} style={{ width: 112, padding: '5px 8px', fontSize: 14, flex: 'none' }} placeholder="No ticker" list="known-tickers" spellCheck={false} autoCapitalize="characters" disabled={x.via === 'globes'}
+                  value={x.via === 'globes' ? `TASE ${x.id}` : symbols[x.id] ?? ''} onChange={e => setSymbols({ ...symbols, [x.id]: e.target.value.toUpperCase() })} />
+              </div>
+            </div>
+          ))}
+        </div>
+        <label className="row small"><input type="checkbox" style={{ width: 'auto' }} checked={removeMissing} onChange={e => setRemoveMissing(e.target.checked)} /> Remove holdings in these accounts that aren't in this file</label>
+        <button className="btn block" disabled={!!busy} onClick={apply}>{busy ? 'Working…' : `Import ${preview.rows.length} holdings`}</button>
+      </>}
+    </Sheet>
+  );
+}
 
 /** Enter a position as it stands today. Saved as one balance entry, so no past trades are needed. */
 function HoldingFields({ data, account, instrument, h, reload, close }: { data: Data; account: string; instrument: string; h?: Report['holdings'][number]; reload: () => Promise<void>; close: () => void }) {
@@ -345,6 +761,21 @@ function HoldingFields({ data, account, instrument, h, reload, close }: { data: 
   const [f, setF] = useState(initial);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [dateHint, setDateHint] = useState('');
+  const dateTouched = useRef(false);
+  // Default "Bought on" to the last day the asset traded at the entered cost, unless the user picked a date.
+  useEffect(() => {
+    const cost = Number(f.cost);
+    if (!hasCost || dateTouched.current || f.cost === initial.cost || !(cost > 0)) { setDateHint(''); return; }
+    let live = true;
+    const timer = setTimeout(async () => {
+      const { date } = await api.priceDate(instrument, cost).catch(() => ({ date: null }));
+      if (!live || dateTouched.current) return;
+      if (date) { setF(x => ({ ...x, acquired: date })); setDateHint(`Last traded near this price on ${date}.`); }
+      else setDateHint('No price history found, so please set the date yourself.');
+    }, 400);
+    return () => { live = false; clearTimeout(timer); };
+  }, [f.cost, hasCost, instrument, initial.cost]);
   const send = async (body: Parameters<typeof api.setHolding>[0]) => {
     setBusy(true); setErr('');
     try { await api.setHolding(body); await reload(); close(); }
@@ -377,9 +808,10 @@ function HoldingFields({ data, account, instrument, h, reload, close }: { data: 
       <div className="grid2">
         <label className="f">{isCash || isDebt ? `Balance (${ccy})` : 'Quantity'}<input inputMode="decimal" value={f.qty} onChange={e => setF({ ...f, qty: e.target.value })} /></label>
         {hasCost && <label className="f">Average cost per unit ({ccy})<input inputMode="decimal" value={f.cost} onChange={e => setF({ ...f, cost: e.target.value })} /></label>}
-        {hasCost && <label className="f">Bought on (approx.)<input type="date" value={f.acquired} onChange={e => setF({ ...f, acquired: e.target.value })} /></label>}
+        {hasCost && <label className="f">Bought on (approx.)<input type="date" value={f.acquired} onChange={e => { dateTouched.current = true; setDateHint(''); setF({ ...f, acquired: e.target.value }); }} /></label>}
         {isManual && <label className="f">Current price ({ccy})<input inputMode="decimal" value={f.price} placeholder="same as cost" onChange={e => setF({ ...f, price: e.target.value })} /></label>}
       </div>
+      {dateHint && <div className="small ink2" role="status">{dateHint}</div>}
       {hasCost && <div className="small muted">Cost and date are used to estimate tax. Changing either merges this holding's lots into one.</div>}
       {err && <div className="err">{err}</div>}
       <div className="row">
@@ -639,6 +1071,19 @@ export function Settings({ data, reload, onServer, onDirty }: Omit<Ctx, 'report'
   useEffect(() => { onDirty(JSON.stringify(s) !== JSON.stringify(data.settings) || JSON.stringify(accts) !== JSON.stringify(data.accounts)); }, [s, accts, data]);
   const [fileBusy, setFileBusy] = useState(false);
   const [fileMsg, setFileMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [keepTickers, setKeepTickers] = useState(true);
+  const clearApp = async () => {
+    if (!confirm('Clear ALL accounts, holdings, transactions, targets and settings?\n\nA backup of your current data is kept on the server first.')) return;
+    setFileBusy(true); setFileMsg(null);
+    try {
+      const { autoBackup } = await api.clearAll(keepTickers);
+      const fresh = await api.data();
+      setS(structuredClone(fresh.settings)); setAccts(structuredClone(fresh.accounts));
+      await reload();
+      setFileMsg({ ok: true, text: `App cleared. Previous data kept as backups/${autoBackup}.` });
+    } catch (e) { setFileMsg({ ok: false, text: (e as Error).message }); }
+    setFileBusy(false);
+  };
   const saveToFile = async () => {
     setFileBusy(true); setFileMsg(null);
     try {
@@ -690,6 +1135,8 @@ export function Settings({ data, reload, onServer, onDirty }: Omit<Ctx, 'report'
           </label>
         </div>
         <div className="small muted">The file contains your whole portfolio, unencrypted, so keep it somewhere private.</div>
+        <label className="row small"><input type="checkbox" style={{ width: 'auto' }} checked={keepTickers} onChange={e => setKeepTickers(e.target.checked)} /> When clearing, remember confirmed tickers</label>
+        <button className="btn danger block" disabled={fileBusy} onClick={clearApp}>Clear app and start over</button>
         {fileMsg && <div className={fileMsg.ok ? 'small ink2' : 'err'} role="status">{fileMsg.text}</div>}
       </div>
       <div className="card stack">

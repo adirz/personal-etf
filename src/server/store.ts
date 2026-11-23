@@ -1,6 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { emptySecurityIds, type SecurityIds } from '../import/resolve.js';
 import { today } from '../core/market.js';
+import { DEFAULT_RULES } from '../core/profiles.js';
 import { buildReport } from '../core/report.js';
 import { DEFAULT_SETTINGS, type Data, type ExposureSpec, type MarketSnapshot, type Series, type Targets } from '../core/types.js';
 
@@ -16,6 +18,7 @@ export interface Backup {
   data: Data;
   manualPrices: Record<string, PriceFile>;
   cache: { prices: Record<string, PriceFile>; fx: Record<string, Series>; exposure: Record<string, ExposureSpec> };
+  securityIds?: SecurityIds;
 }
 const AUTO_BACKUPS_KEPT = 10;
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -34,12 +37,7 @@ function parseBackup(raw: unknown): Backup {
 const DEFAULT_TARGETS: Targets = {
   defaultBand: { abs: 5, rel: 0.25 },
   excludedPct: 5,
-  rules: [
-    { id: 'asset-class', scope: {}, dimension: 'assetClass', weights: { equity: 63, bond: 21, commodity: 11, precious_metals: 5 } },
-    { id: 'equity-region', scope: { assetClass: 'equity' }, dimension: 'region', weights: { US: 75, emerging: 25 } },
-    { id: 'us-equity-sector', scope: { assetClass: 'equity', region: 'US' }, dimension: 'sector', weights: { technology: 20, real_estate: 20, financial_services: 15, healthcare: 15, industrials: 10, consumer_cyclical: 10, communication_services: 10 } },
-    { id: 'bond-type', scope: { assetClass: 'bond' }, dimension: 'credit', weights: { government: 50, A: 30, AA: 10, AAA: 10 } },
-  ],
+  rules: DEFAULT_RULES,
 };
 
 /** Plain-JSON file store. Small, diffable, hand-editable; writes are atomic (tmp + rename). */
@@ -85,12 +83,46 @@ export class Store {
     return out;
   }
 
+  /** Identifiers learned from imports and confirmations, so later uploads need no input. */
+  securityIds() { return this.read<SecurityIds>(this.f('security-ids.json'), emptySecurityIds()); }
+  putSecurityIds(v: SecurityIds) { return this.write(this.f('security-ids.json'), v); }
+
   async exportAll(): Promise<Backup> {
-    const [data, manualPrices, prices, fx, exposure] = await Promise.all([
+    const [data, manualPrices, prices, fx, exposure, securityIds] = await Promise.all([
       this.data(), this.readAll<PriceFile>('manual-prices'), this.readAll<PriceFile>('cache', 'prices'),
-      this.readAll<Series>('cache', 'fx'), this.readAll<ExposureSpec>('cache', 'exposure'),
+      this.readAll<Series>('cache', 'fx'), this.readAll<ExposureSpec>('cache', 'exposure'), this.securityIds(),
     ]);
-    return { format: 'personal-etf-backup', version: 1, savedAt: new Date().toISOString(), data, manualPrices, cache: { prices, fx, exposure } };
+    return { format: 'personal-etf-backup', version: 1, savedAt: new Date().toISOString(), data, manualPrices, cache: { prices, fx, exposure }, securityIds };
+  }
+
+  /** The most recent targets, from before a profile was applied, that differ from the current ones. */
+  async previousTargets(): Promise<Targets | null> {
+    const current = JSON.stringify((await this.data()).targets.rules);
+    const names = (await fs.readdir(this.f('backups')).catch(() => [] as string[])).filter(n => n.startsWith('before-profile-')).sort().reverse();
+    for (const n of names) {
+      const t = (await this.read<Backup | null>(this.f('backups', n), null))?.data?.targets;
+      if (t?.rules && JSON.stringify(t.rules) !== current) return t;
+    }
+    return null;
+  }
+
+  /** Clear the portfolio and start fresh. A full copy stays in backups/ first. */
+  async reset(keepTickers = true) {
+    const autoBackup = await this.keepBackup('before-clear');
+    for (const c of COLLECTIONS) await fs.rm(this.f(`${c}.json`), { force: true });
+    for (const sub of ['manual-prices', 'cache']) await fs.rm(this.f(sub), { recursive: true, force: true });
+    await fs.rm(this.f('broker-symbols.json'), { force: true });
+    if (!keepTickers) await fs.rm(this.f('security-ids.json'), { force: true });
+    return autoBackup;
+  }
+
+  /** Copy all current data to backups/, keeping the newest few of each kind. Returns the file name. */
+  async keepBackup(prefix: string) {
+    const name = `${prefix}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    await this.write(this.f('backups', name), await this.exportAll());
+    const kept = (await fs.readdir(this.f('backups'))).filter(n => n.startsWith(`${prefix}-`)).sort();
+    for (const old of kept.slice(0, -AUTO_BACKUPS_KEPT)) await fs.rm(this.f('backups', old), { force: true });
+    return name;
   }
 
   /**
@@ -114,16 +146,15 @@ export class Store {
         buildReport(d, await staging.snapshot(d, d.settings.benchmark ? [d.settings.benchmark] : []), today(), false);
       } catch (e) { throw new Error(`The save file could not be loaded: ${(e as Error).message}`); }
 
-      const autoBackup = `before-load-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-      await this.write(this.f('backups', autoBackup), await this.exportAll());
-      const kept = (await fs.readdir(this.f('backups'))).filter(n => n.startsWith('before-load-')).sort();
-      for (const old of kept.slice(0, -AUTO_BACKUPS_KEPT)) await fs.rm(this.f('backups', old), { force: true });
+      const autoBackup = await this.keepBackup('before-load');
 
       for (const sub of ['manual-prices', 'cache']) {
         await fs.rm(this.f(sub), { recursive: true, force: true });
         await fs.rename(path.join(stagingDir, sub), this.f(sub));
       }
       for (const c of COLLECTIONS) await fs.rename(path.join(stagingDir, `${c}.json`), this.f(`${c}.json`));
+      await fs.rm(this.f('broker-symbols.json'), { force: true });
+      await this.putSecurityIds(b.securityIds ?? emptySecurityIds());
       return { autoBackup };
     } finally {
       await fs.rm(stagingDir, { recursive: true, force: true });

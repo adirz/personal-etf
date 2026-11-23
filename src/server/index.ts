@@ -12,6 +12,8 @@ import { parseSymbols } from '../core/symbols.js';
 import type { Instrument, Tx } from '../core/types.js';
 import { parsePriceCsv } from '../providers/others.js';
 import { defaultRegistry } from '../providers/registry.js';
+import { brokerImportRoutes } from './brokerImport.js';
+import { linkReviewRoutes } from './linkReview.js';
 import { refresh } from './refresh.js';
 import { COLLECTIONS, Store, type Collection } from './store.js';
 
@@ -95,6 +97,9 @@ app.post<{ Body: HoldingEdit }>('/api/holdings', async (req) => {
   await store.put('transactions', next.transactions);
   return add;
 });
+
+brokerImportRoutes(app, store, reg);
+linkReviewRoutes(app, store, reg);
 
 app.get('/api/backup', async () => store.exportAll());
 app.post('/api/backup', { bodyLimit: 64 * 1024 * 1024 }, async (req) => store.importAll(req.body));

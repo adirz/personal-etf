@@ -59,7 +59,7 @@ export function valuate(data: Data, st: PortfolioState, mkt: Market, date: ISODa
       value: amt * mkt.fx(ccy, base, date), atoms: atoms(specFor(ci), ccy),
       excluded: false, inTargets: true, tradable: false, fractional: true, lots: [],
     });
-    if (amt < -0.01) warnings.push(`negative cash ${amt.toFixed(2)} ${ccy} in ${acct} — missing deposit?`);
+    if (amt < -0.01) warnings.push(`negative cash ${amt.toFixed(2)} ${ccy} in ${acct} (a margin balance, or a missing deposit)`);
   }
   const netWorth = lines.reduce((s, l) => s + l.value, 0);
   const investable = lines.filter(l => l.inTargets).reduce((s, l) => s + l.value, 0);
